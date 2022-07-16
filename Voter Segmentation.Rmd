@@ -1,0 +1,363 @@
+---
+title: "Voter Segmentation"
+author: "Christian"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+
+
+library(tidyverse)
+library(haven)
+library(cluster)
+library(fastDummies)
+library(janitor)
+
+
+```
+
+# Voter Segmentation in R
+
+This document details all the modelling done for this project. The idea is to generate clusters from group of voters using an unsupervised machine learning model. Then, once we have generated those clusters, to analyse those clusters and tease out any insights that can be drawn from them.
+
+
+## Importing the data
+
+The first thing we will need is to import the data and prepare it for analysis. This data will be the <a href="https://www.britishelectionstudy.com/data-object/wave-21-of-the-2014-2023-british-election-study-internet-panel/>latest wave</a> of the British Election Study's panel study.
+
+```{r data, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+#Define function for label extraction
+
+columnLabels <- function(column_values){
+  
+  ref <- as_tibble(stack(attr(column_values, "labels"))) %>%
+                      rename(value = values)
+  
+  column_table <- as_tibble(column_values) %>%
+                      left_join(ref) %>%
+                      select(ind)
+  
+  return(column_table)
+  
+}
+
+
+
+#Import the data
+
+data <- read_dta("Data/BES2019_W21_v21.0.dta") %>%
+  
+  #Select all columns of use
+  
+  select(
+    turnoutUKGeneral
+    , generalElectionVote
+    , likeJohnson
+    , likeStarmer
+    , likeCon
+    , likeLab
+    , likeLD
+    , likeBrexitParty
+    , riskPoverty
+    , riskUnemployment
+    , euRefVote
+    , britishness
+    , europeanness
+    , lr_scale
+    , age
+    , gender
+    , country
+    , p_education
+    , p_ethnicity
+    , p_gross_personal
+    , p_gross_household
+    , p_marital
+    , p_paper_read
+    , p_religion
+    , p_past_vote_2015
+    , p_past_vote_2017
+    , p_past_vote_2019
+    , p_eurefturnout
+  ) %>%
+  
+  #Removing NA values
+  
+  drop_na() %>%
+  
+  #Turn values into their value labels
+
+  mutate(
+    
+    generalElectionVote = columnLabels(generalElectionVote)
+  #  , riskPoverty = columnLabels(riskPoverty)
+  #  , riskUnemployment = columnLabels(riskUnemployment)
+  #  , euRefVote = columnLabels(euRefVote)
+  #  , britishness = columnLabels(britishness)
+  #  , europeanness = columnLabels(europeanness)
+    , gender = columnLabels(gender)
+    , country = columnLabels(country)
+    , p_education = columnLabels(p_education)
+    , p_ethnicity = columnLabels(p_ethnicity)
+  #  , p_gross_personal = columnLabels(p_gross_personal)
+  #  , p_gross_household = columnLabels(p_gross_household)
+    , p_marital = columnLabels(p_marital)
+    , p_paper_read = columnLabels(p_paper_read)
+    , p_religion = columnLabels(p_religion)
+    , p_past_vote_2015 = columnLabels(p_past_vote_2015)
+    , p_past_vote_2017 = columnLabels(p_past_vote_2017)
+    , p_past_vote_2019 = columnLabels(p_past_vote_2019)
+  
+  ) %>%
+  
+  #Convert variables to dummies
+  
+  dummy_cols(select_columns = c(
+    
+    "generalElectionVote"
+    , "country"
+    , "p_education"
+    , "p_ethnicity"
+    , "p_marital"
+    , "p_paper_read"
+    , "p_religion"
+    , "p_past_vote_2015"
+    , "p_past_vote_2017"
+    , "p_past_vote_2019"
+    , "euRefVote"
+    
+    )
+    
+  ) %>%
+  
+  clean_names() %>%
+  
+  select(
+    
+    turnout_uk_general
+    , like_johnson
+    , like_starmer
+    , like_con
+    , like_lab
+    , like_ld
+    , like_brexit_party
+    , risk_poverty
+    , risk_unemployment
+    , britishness
+    , europeanness
+    , lr_scale
+    , age
+    , p_gross_personal
+    , p_gross_household
+    , p_eurefturnout
+    , general_election_vote_i_would_did_not_vote                                                                                           
+    , general_election_vote_conservative                                                                                                   
+    , general_election_vote_labour                                                                                                         
+    , general_election_vote_liberal_democrat                                                                                               
+    , general_election_vote_scottish_national_party_snp                                                                                    
+    , general_election_vote_plaid_cymru                                                                                                    
+    , general_election_vote_united_kingdom_independence_party_ukip                                                                         
+    , general_election_vote_green_party                                                                                                    
+    , general_election_vote_british_national_party_bnp                                                                                     
+    , general_election_vote_other                                                                                                          
+    , general_election_vote_change_uk_the_independent_group                                                                                
+    , general_election_vote_brexit_party_reform_uk                                                                                         
+    , general_election_vote_an_independent_candidate                                                                                       
+    , general_election_vote_dont_know                                                                                                      
+    , country_england                                                                                                                      
+    , country_scotland                                                                                                                     
+    , country_wales                                                                                                                        
+    , p_education_no_formal_qualifications                                                                                                 
+    , p_education_youth_training_certificate_skillseekers                                                                                  
+    , p_education_recognised_trade_apprenticeship_completed                                                                                
+    , p_education_clerical_and_commercial                                                                                                  
+    , p_education_city_guilds_certificate                                                                                                  
+    , p_education_city_guilds_certificate_advanced                                                                                         
+    , p_education_onc                                                                                                                      
+    , p_education_cse_grades_2_5                                                                                                           
+    , p_education_cse_grade_1_gce_o_level_gcse_school_certificate                                                                          
+    , p_education_scottish_ordinary_lower_certificate                                                                                      
+    , p_education_gce_a_level_or_higher_certificate                                                                                        
+    , p_education_scottish_higher_certificate                                                                                              
+    , p_education_nursing_qualification_e_g_sen_srn_scm_rgn                                                                                
+    , p_education_teaching_qualification_not_degree                                                                                        
+    , p_education_university_diploma                                                                                                       
+    , p_education_university_or_cnaa_first_degree_e_g_ba_b_sc_b_ed                                                                         
+    , p_education_university_or_cnaa_higher_degree_e_g_m_sc_ph_d                                                                           
+    , p_education_other_technical_professional_or_higher_qualification                                                                     
+    , p_education_dont_know                                                                                                                
+    , p_education_prefer_not_to_say                                                                                                        
+    , p_ethnicity_white_british                                                                                                            
+    , p_ethnicity_any_other_white_background                                                                                               
+    , p_ethnicity_white_and_black_caribbean                                                                                                
+    , p_ethnicity_white_and_black_african                                                                                                  
+    , p_ethnicity_white_and_asian                                                                                                          
+    , p_ethnicity_any_other_mixed_background                                                                                               
+    , p_ethnicity_indian                                                                                                                   
+    , p_ethnicity_pakistani                                                                                                                
+    , p_ethnicity_bangladeshi                                                                                                              
+    , p_ethnicity_any_other_asian_background                                                                                               
+    , p_ethnicity_black_caribbean                                                                                                          
+    , p_ethnicity_black_african                                                                                                            
+    , p_ethnicity_any_other_black_background                                                                                               
+    , p_ethnicity_chinese                                                                                                                  
+    , p_ethnicity_other_ethnic_group                                                                                                       
+    , p_ethnicity_prefer_not_to_say                                                                                                        
+    , p_marital_married                                                                                                                    
+    , p_marital_in_a_civil_partnership                                                                                                     
+    , p_marital_separated_but_still_legally_married_or_in_a_civil_partnership                                                              
+    , p_marital_living_with_a_partner_but_neither_married_nor_in_a_civil_partnership                                                       
+    , p_marital_in_a_relationship_but_not_living_together                                                                                  
+    , p_marital_single                                                                                                                     
+    , p_marital_divorced                                                                                                                   
+    , p_marital_widowed                                                                                                                    
+    , p_paper_read_the_express                                                                                                             
+    , p_paper_read_the_daily_mail_the_scottish_daily_mail                                                                                  
+    , p_paper_read_the_mirror_daily_record                                                                                                 
+    , p_paper_read_the_daily_star_the_daily_star_of_scotland                                                                               
+    , p_paper_read_the_sun                                                                                                                 
+    , p_paper_read_the_daily_telegraph                                                                                                     
+    , p_paper_read_the_financial_times                                                                                                     
+    , p_paper_read_the_guardian                                                                                                            
+    , p_paper_read_the_independent                                                                                                         
+    , p_paper_read_the_times                                                                                                               
+    , p_paper_read_the_scotsman                                                                                                            
+    , p_paper_read_the_herald_glasgow                                                                                                      
+    , p_paper_read_the_western_mail                                                                                                        
+    , p_paper_read_other_local_daily_morning_newspaper                                                                                     
+    , p_paper_read_other_newspaper                                                                                                         
+    , p_paper_read_none                                                                                                                    
+    , p_religion_no_i_do_not_regard_myself_as_belonging_to_any_particular_religion                                                         
+    , p_religion_yes_church_of_england_anglican_episcopal                                                                                  
+    , p_religion_yes_roman_catholic                                                                                                        
+    , p_religion_yes_presbyterian_church_of_scotland                                                                                       
+    , p_religion_yes_methodist                                                                                                             
+    , p_religion_yes_baptist                                                                                                               
+    , p_religion_yes_united_reformed_church                                                                                                
+    , p_religion_yes_free_presbyterian                                                                                                     
+    , p_religion_yes_brethren                                                                                                              
+    , p_religion_yes_judaism                                                                                                               
+    , p_religion_yes_hinduism                                                                                                              
+    , p_religion_yes_islam                                                                                                                 
+    , p_religion_yes_sikhism                                                                                                               
+    , p_religion_yes_buddhism                                                                                                              
+    , p_religion_yes_other                                                                                                                 
+    , p_religion_prefer_not_to_say                                                                                                         
+    , p_religion_yes_a_orthodox_christian                                                                                                  
+    , p_religion_yes_pentecostal_e_g_assemblies_of_god_elim_pentecostal_church_new_testament_church_of_god_redeemed_christian_church_of_god
+    , p_religion_yes_evangelical_a_independent_non_denominational_e_g_fiec_pioneer_vineyard_newfrontiers                                   
+    , p_past_vote_2015_i_would_did_not_vote                                                                                                
+    , p_past_vote_2015_conservative                                                                                                        
+    , p_past_vote_2015_labour                                                                                                              
+    , p_past_vote_2015_liberal_democrat                                                                                                    
+    , p_past_vote_2015_scottish_national_party_snp                                                                                         
+    , p_past_vote_2015_plaid_cymru                                                                                                         
+    , p_past_vote_2015_united_kingdom_independence_party_ukip                                                                              
+    , p_past_vote_2015_green_party                                                                                                         
+    , p_past_vote_2015_british_national_party_bnp                                                                                          
+    , p_past_vote_2015_other                                                                                                               
+    , p_past_vote_2015_change_uk_the_independent_group                                                                                     
+    , p_past_vote_2015_brexit_party_reform_uk                                                                                              
+    , p_past_vote_2015_an_independent_candidate                                                                                            
+    , p_past_vote_2015_dont_know                                                                                                           
+    , p_past_vote_2017_i_would_did_not_vote                                                                                                
+    , p_past_vote_2017_conservative                                                                                                        
+    , p_past_vote_2017_labour                                                                                                              
+    , p_past_vote_2017_liberal_democrat                                                                                                    
+    , p_past_vote_2017_scottish_national_party_snp                                                                                         
+    , p_past_vote_2017_plaid_cymru                                                                                                         
+    , p_past_vote_2017_united_kingdom_independence_party_ukip                                                                              
+    , p_past_vote_2017_green_party                                                                                                         
+    , p_past_vote_2017_british_national_party_bnp                                                                                          
+    , p_past_vote_2017_other                                                                                                               
+    , p_past_vote_2017_change_uk_the_independent_group                                                                                     
+    , p_past_vote_2017_brexit_party_reform_uk                                                                                              
+    , p_past_vote_2017_an_independent_candidate                                                                                            
+    , p_past_vote_2017_dont_know                                                                                                           
+    , p_past_vote_2019_i_would_did_not_vote                                                                                                
+    , p_past_vote_2019_conservative                                                                                                        
+    , p_past_vote_2019_labour                                                                                                              
+    , p_past_vote_2019_liberal_democrat                                                                                                    
+    , p_past_vote_2019_scottish_national_party_snp                                                                                         
+    , p_past_vote_2019_plaid_cymru                                                                                                         
+    , p_past_vote_2019_united_kingdom_independence_party_ukip                                                                              
+    , p_past_vote_2019_green_party                                                                                                         
+    , p_past_vote_2019_british_national_party_bnp                                                                                          
+    , p_past_vote_2019_other                                                                                                               
+    , p_past_vote_2019_change_uk_the_independent_group                                                                                     
+    , p_past_vote_2019_brexit_party_reform_uk                                                                                              
+    , p_past_vote_2019_an_independent_candidate                                                                                            
+    , p_past_vote_2019_dont_know
+   
+    )
+
+
+head(data)
+
+```
+
+
+## Elbow plots
+
+For the K-means clustering algorithm, we will have to decide upon a value of k. In other words, how many clusters we would like to generate. For this, we will be using an elbow plot to decide on the value of K. This plot will visualise the within sum of squares to 
+
+
+```{r elbow, include=FALSE, fig.align='center'}
+
+tot_withinss <- map_dbl(1:10,  function(k){
+    model <- kmeans(x = data, centers = k, iter.max = 100, nstart = 1000)
+    print("Finished a model")
+    model$tot.withinss
+})
+
+elbow_df <- data.frame(
+    k = 1:10,
+    tot_withinss = tot_withinss
+)
+
+elbow_plot <- ggplot(elbow_df, aes(x = k, y = tot_withinss)) +
+  geom_point(aes(color = as.character(k)), size = 2) +
+  scale_x_continuous(n.breaks = 10) +
+  labs(title = "Elbow Plot", subtitle = "Sum of squares for each value of K", y = "Within sum of squares", x = "Value of K") +
+  geom_line() +
+  theme_minimal() +
+  theme(
+    axis.line.x.bottom = element_line(color = "black")
+    , legend.position = "none"
+    )
+
+ggsave(ggsave("Images/elbow_plot.png", height = 4.47, width = 7.2))
+
+elbow_plot
+
+```
+
+
+```{r cluster, include=FALSE}
+# distance matrix
+data_dist <- dist(data)
+
+# Multidimensional scaling
+cmd <- cmdscale(data_dist) %>%
+  
+  #Add clusters for color
+  
+  mutate(cluster = as.character(kmean$cluster))
+  
+# plot MDS, with colors by groups from kmeans
+
+cluster_plot <- ggplot(cmd, aes(x = v1, y = v2, color = cluster)) +
+  
+  #Add points
+  
+  
+  
+
+```
