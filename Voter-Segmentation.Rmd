@@ -1,0 +1,1166 @@
+---
+title: "Voter Segmentation"
+author: "Christian"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: hpstr
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+
+
+library(tidyverse)
+library(factoextra)
+library(haven)
+library(cluster)
+library(fastDummies)
+library(janitor)
+library(rgl)
+library(plotly)
+
+
+```
+
+# Voter Segmentation in R
+
+This document details all the code and modelling work for this project. The idea is to generate clusters from group of voters using an unsupervised machine learning model. Then, once we have generated those clusters, to analyse those clusters and tease out any insights that can be drawn from them.
+
+
+## Importing the data
+
+The first thing we will need is to import the data and prepare it for analysis. This data is the [latest panel]("https://www.britishelectionstudy.com/data-object/wave-21-of-the-2014-2023-british-election-study-internet-panel/") of the British Election Study's longitudinal panel survey. I've displayed a section of that data below.
+
+```{r data, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+#Define function for label extraction
+
+columnLabels <- function(column_values){
+  
+  ref <- as_tibble(stack(attr(column_values, "labels"))) %>%
+                      rename(value = values)
+  
+  column_table <- as_tibble(column_values) %>%
+                      left_join(ref) %>%
+                      select(ind)
+  
+  return(column_table)
+  
+}
+
+
+
+#Import the data
+
+data <- read_dta("Data/BES2019_W21_v21.0.dta") %>%
+  
+  #Select all columns of use
+  
+  select(
+    turnoutUKGeneral
+    , generalElectionVote
+    , likeJohnson
+    , likeStarmer
+    , likeCon
+    , likeLab
+    , likeLD
+    , likeBrexitParty
+    , riskPoverty
+    , riskUnemployment
+    , euRefVote
+    , britishness
+    , europeanness
+    , lr_scale
+    , age
+    , gender
+    , country
+    , p_education
+    , p_ethnicity
+    , p_gross_personal
+    , p_gross_household
+    , p_marital
+    , p_paper_read
+    , p_religion
+    , p_past_vote_2015
+    , p_past_vote_2017
+    , p_past_vote_2019
+    , p_eurefturnout
+  ) %>%
+  
+  #Removing NA values
+  
+  drop_na() %>%
+  
+  #Turn values into their value labels
+
+  mutate(
+    
+    generalElectionVote = columnLabels(generalElectionVote)
+    , riskPoverty = columnLabels(riskPoverty)
+    , riskUnemployment = columnLabels(riskUnemployment)
+    , euRefVote = columnLabels(euRefVote)
+  #  , britishness = columnLabels(britishness)
+  #  , europeanness = columnLabels(europeanness)
+    , gender = columnLabels(gender)
+    , country = columnLabels(country)
+    , p_education = columnLabels(p_education)
+    , p_ethnicity = columnLabels(p_ethnicity)
+  #  , p_gross_personal = columnLabels(p_gross_personal)
+  #  , p_gross_household = columnLabels(p_gross_household)
+    , p_marital = columnLabels(p_marital)
+    , p_paper_read = columnLabels(p_paper_read)
+    , p_religion = columnLabels(p_religion)
+    , p_past_vote_2015 = columnLabels(p_past_vote_2015)
+    , p_past_vote_2017 = columnLabels(p_past_vote_2017)
+    , p_past_vote_2019 = columnLabels(p_past_vote_2019)
+  
+  ) %>%
+  
+  #Convert variables to dummies
+  
+  dummy_cols(select_columns = c(
+    
+    "generalElectionVote"
+    , "riskPoverty"
+    , "riskUnemployment"
+    , "country"
+    , "p_education"
+    , "p_ethnicity"
+    , "p_marital"
+    , "p_paper_read"
+    , "p_religion"
+    , "p_past_vote_2015"
+    , "p_past_vote_2017"
+    , "p_past_vote_2019"
+    , "euRefVote"
+    
+    )
+    
+  ) %>%
+  
+  clean_names() %>%
+  
+  select(
+    
+    turnout_uk_general
+    , like_johnson
+    , like_starmer
+    , like_con
+    , like_lab
+    , like_ld
+    , like_brexit_party
+    , britishness
+    , europeanness
+    , lr_scale
+    , age
+    , p_gross_personal
+    , p_gross_household
+    , p_eurefturnout
+    , general_election_vote_i_would_did_not_vote                                                                                           
+    , general_election_vote_conservative                                                                                                   
+    , general_election_vote_labour                                                                                                         
+    , general_election_vote_liberal_democrat                                                                                               
+    , general_election_vote_scottish_national_party_snp                                                                                    
+    , general_election_vote_plaid_cymru                                                                                                    
+    , general_election_vote_united_kingdom_independence_party_ukip                                                                         
+    , general_election_vote_green_party                                                                                                    
+    , general_election_vote_british_national_party_bnp                                                                                     
+    , general_election_vote_other                                                                                                          
+    , general_election_vote_change_uk_the_independent_group                                                                                
+    , general_election_vote_brexit_party_reform_uk                                                                                         
+    , general_election_vote_an_independent_candidate                                                                                       
+    , general_election_vote_dont_know
+    , risk_poverty_very_unlikely                                                                                                           
+    , risk_poverty_fairly_unlikely                                                                                                         
+    , risk_poverty_neither_likely_nor_unlikely                                                                                             
+    , risk_poverty_fairly_likely                                                                                                           
+    , risk_poverty_very_likely                                                                                                             
+    , risk_poverty_dont_know                                                                                                               
+    , risk_unemployment_very_unlikely                                                                                                      
+    , risk_unemployment_fairly_unlikely                                                                                                    
+    , risk_unemployment_neither_likely_nor_unlikely                                                                                        
+    , risk_unemployment_fairly_likely                                                                                                      
+    , risk_unemployment_very_likely                                                                                                        
+    , risk_unemployment_dont_know
+    , country_england                                                                                                                      
+    , country_scotland                                                                                                                     
+    , country_wales                                                                                                                        
+    , p_education_no_formal_qualifications                                                                                                 
+    , p_education_youth_training_certificate_skillseekers                                                                                  
+    , p_education_recognised_trade_apprenticeship_completed                                                                                
+    , p_education_clerical_and_commercial                                                                                                  
+    , p_education_city_guilds_certificate                                                                                                  
+    , p_education_city_guilds_certificate_advanced                                                                                         
+    , p_education_onc                                                                                                                      
+    , p_education_cse_grades_2_5                                                                                                           
+    , p_education_cse_grade_1_gce_o_level_gcse_school_certificate                                                                          
+    , p_education_scottish_ordinary_lower_certificate                                                                                      
+    , p_education_gce_a_level_or_higher_certificate                                                                                        
+    , p_education_scottish_higher_certificate                                                                                              
+    , p_education_nursing_qualification_e_g_sen_srn_scm_rgn                                                                                
+    , p_education_teaching_qualification_not_degree                                                                                        
+    , p_education_university_diploma                                                                                                       
+    , p_education_university_or_cnaa_first_degree_e_g_ba_b_sc_b_ed                                                                         
+    , p_education_university_or_cnaa_higher_degree_e_g_m_sc_ph_d                                                                           
+    , p_education_other_technical_professional_or_higher_qualification                                                                     
+    , p_education_dont_know                                                                                                                
+    , p_education_prefer_not_to_say                                                                                                        
+    , p_ethnicity_white_british                                                                                                            
+    , p_ethnicity_any_other_white_background                                                                                               
+    , p_ethnicity_white_and_black_caribbean                                                                                                
+    , p_ethnicity_white_and_black_african                                                                                                  
+    , p_ethnicity_white_and_asian                                                                                                          
+    , p_ethnicity_any_other_mixed_background                                                                                               
+    , p_ethnicity_indian                                                                                                                   
+    , p_ethnicity_pakistani                                                                                                                
+    , p_ethnicity_bangladeshi                                                                                                              
+    , p_ethnicity_any_other_asian_background                                                                                               
+    , p_ethnicity_black_caribbean                                                                                                          
+    , p_ethnicity_black_african                                                                                                            
+    , p_ethnicity_any_other_black_background                                                                                               
+    , p_ethnicity_chinese                                                                                                                  
+    , p_ethnicity_other_ethnic_group                                                                                                       
+    , p_ethnicity_prefer_not_to_say                                                                                                        
+    , p_marital_married                                                                                                                    
+    , p_marital_in_a_civil_partnership                                                                                                     
+    , p_marital_separated_but_still_legally_married_or_in_a_civil_partnership                                                              
+    , p_marital_living_with_a_partner_but_neither_married_nor_in_a_civil_partnership                                                       
+    , p_marital_in_a_relationship_but_not_living_together                                                                                  
+    , p_marital_single                                                                                                                     
+    , p_marital_divorced                                                                                                                   
+    , p_marital_widowed                                                                                                                    
+    , p_paper_read_the_express                                                                                                             
+    , p_paper_read_the_daily_mail_the_scottish_daily_mail                                                                                  
+    , p_paper_read_the_mirror_daily_record                                                                                                 
+    , p_paper_read_the_daily_star_the_daily_star_of_scotland                                                                               
+    , p_paper_read_the_sun                                                                                                                 
+    , p_paper_read_the_daily_telegraph                                                                                                     
+    , p_paper_read_the_financial_times                                                                                                     
+    , p_paper_read_the_guardian                                                                                                            
+    , p_paper_read_the_independent                                                                                                         
+    , p_paper_read_the_times                                                                                                               
+    , p_paper_read_the_scotsman                                                                                                            
+    , p_paper_read_the_herald_glasgow                                                                                                      
+    , p_paper_read_the_western_mail                                                                                                        
+    , p_paper_read_other_local_daily_morning_newspaper                                                                                     
+    , p_paper_read_other_newspaper                                                                                                         
+    , p_paper_read_none                                                                                                                    
+    , p_religion_no_i_do_not_regard_myself_as_belonging_to_any_particular_religion                                                         
+    , p_religion_yes_church_of_england_anglican_episcopal                                                                                  
+    , p_religion_yes_roman_catholic                                                                                                        
+    , p_religion_yes_presbyterian_church_of_scotland                                                                                       
+    , p_religion_yes_methodist                                                                                                             
+    , p_religion_yes_baptist                                                                                                               
+    , p_religion_yes_united_reformed_church                                                                                                
+    , p_religion_yes_free_presbyterian                                                                                                     
+    , p_religion_yes_brethren                                                                                                              
+    , p_religion_yes_judaism                                                                                                               
+    , p_religion_yes_hinduism                                                                                                              
+    , p_religion_yes_islam                                                                                                                 
+    , p_religion_yes_sikhism                                                                                                               
+    , p_religion_yes_buddhism                                                                                                              
+    , p_religion_yes_other                                                                                                                 
+    , p_religion_prefer_not_to_say                                                                                                         
+    , p_religion_yes_a_orthodox_christian                                                                                                  
+    , p_religion_yes_pentecostal_e_g_assemblies_of_god_elim_pentecostal_church_new_testament_church_of_god_redeemed_christian_church_of_god
+    , p_religion_yes_evangelical_a_independent_non_denominational_e_g_fiec_pioneer_vineyard_newfrontiers                                   
+    , p_past_vote_2015_i_would_did_not_vote                                                                                                
+    , p_past_vote_2015_conservative                                                                                                        
+    , p_past_vote_2015_labour                                                                                                              
+    , p_past_vote_2015_liberal_democrat                                                                                                    
+    , p_past_vote_2015_scottish_national_party_snp                                                                                         
+    , p_past_vote_2015_plaid_cymru                                                                                                         
+    , p_past_vote_2015_united_kingdom_independence_party_ukip                                                                              
+    , p_past_vote_2015_green_party                                                                                                         
+    , p_past_vote_2015_british_national_party_bnp                                                                                          
+    , p_past_vote_2015_other                                                                                                               
+    , p_past_vote_2015_change_uk_the_independent_group                                                                                     
+    , p_past_vote_2015_brexit_party_reform_uk                                                                                              
+    , p_past_vote_2015_an_independent_candidate                                                                                            
+    , p_past_vote_2015_dont_know                                                                                                           
+    , p_past_vote_2017_i_would_did_not_vote                                                                                                
+    , p_past_vote_2017_conservative                                                                                                        
+    , p_past_vote_2017_labour                                                                                                              
+    , p_past_vote_2017_liberal_democrat                                                                                                    
+    , p_past_vote_2017_scottish_national_party_snp                                                                                         
+    , p_past_vote_2017_plaid_cymru                                                                                                         
+    , p_past_vote_2017_united_kingdom_independence_party_ukip                                                                              
+    , p_past_vote_2017_green_party                                                                                                         
+    , p_past_vote_2017_british_national_party_bnp                                                                                          
+    , p_past_vote_2017_other                                                                                                               
+    , p_past_vote_2017_change_uk_the_independent_group                                                                                     
+    , p_past_vote_2017_brexit_party_reform_uk                                                                                              
+    , p_past_vote_2017_an_independent_candidate                                                                                            
+    , p_past_vote_2017_dont_know                                                                                                           
+    , p_past_vote_2019_i_would_did_not_vote                                                                                                
+    , p_past_vote_2019_conservative                                                                                                        
+    , p_past_vote_2019_labour                                                                                                              
+    , p_past_vote_2019_liberal_democrat                                                                                                    
+    , p_past_vote_2019_scottish_national_party_snp                                                                                         
+    , p_past_vote_2019_plaid_cymru                                                                                                         
+    , p_past_vote_2019_united_kingdom_independence_party_ukip                                                                              
+    , p_past_vote_2019_green_party                                                                                                         
+    , p_past_vote_2019_british_national_party_bnp                                                                                          
+    , p_past_vote_2019_other                                                                                                               
+    , p_past_vote_2019_change_uk_the_independent_group                                                                                     
+    , p_past_vote_2019_brexit_party_reform_uk                                                                                              
+    , p_past_vote_2019_an_independent_candidate                                                                                            
+    , p_past_vote_2019_dont_know
+    , eu_ref_vote_stay_remain_in_the_eu                                                                                                  
+    , eu_ref_vote_leave_the_eu                                                                                                           
+    , eu_ref_vote_i_would_will_not_vote                                                                                                    
+    , eu_ref_vote_dont_know
+    )
+
+
+head(data)
+
+```
+
+## Exploratory analysis
+
+With this data, we can explore some of its features and visualise those findings. For this we'll look into the left/right alignment of voters by party voting intention.
+
+
+```{r explore-lr-party, fig.align='center', message=FALSE, warning=FALSE}
+
+scales <- list(
+  
+  list(args = list(
+      
+    "marker.color", "blue"
+    
+    ),
+    
+    label = "Conservative",
+    
+    method = "restyle",
+    
+    value = "Conservative"
+        
+    ),
+  
+  list(args = list(
+    
+    "marker.color", "red"
+    
+    ),
+      
+    label = "Labour",
+    
+    method = "restyle",
+    
+    value = "Labour"
+       
+       ),
+  
+  list(args = list(
+  
+    "marker.color", "orange"
+    
+  ),
+  
+  label = "Liberal",
+  
+  method = "restyle",
+  
+  value = "Liberal Democrats"
+  
+  )
+  
+)
+
+
+lr_vote <- data %>%
+  
+  filter(
+    
+    (
+    
+    general_election_vote_conservative == 1 |
+    general_election_vote_labour == 1 |
+    general_election_vote_liberal_democrat == 1
+    
+    )
+    
+  ) %>%
+  
+  mutate(party = case_when(
+    
+    (general_election_vote_conservative == 1) ~ "Conservative",
+    (general_election_vote_labour == 1) ~ "Labour",
+    (general_election_vote_liberal_democrat == 1) ~ "Liberal Democrats"
+    
+    )
+    
+  ) %>%
+  
+  count(party, lr_scale) %>%
+  
+  group_by(party) %>%
+  
+  mutate(prop = prop.table(n)) %>%
+  
+  mutate(class = case_when(
+    
+    party == "Conservative" ~ 1,
+    party == "Labour" ~ 2,
+    party == "Liberal Democrats" ~ 3
+    
+    )
+  ) %>%
+  
+  ungroup()
+
+
+
+
+party_plot <- ggplot(lr_vote, aes(x = lr_scale, y = prop, frame = party, fill = party)) +
+  
+  geom_col(position = "identity") +
+  
+  theme_minimal() +
+  
+  scale_fill_manual(
+    
+    values = c(
+      
+      "Conservative" = "blue",
+      "Labour" = "red",
+      "Liberal Democrats" = "orange"
+      
+    )
+    
+  ) +
+  
+  labs(
+    
+    x = "Left/Right Scale (0 = Left, 10 = Right)",
+    y = "Proportion",
+    title = "Left/Right Alignment of 2019 Voters by Party",
+    subtitle = "BES respondents by left/right score and 2019 party vote (non-voters not included)"
+    
+  ) +
+  
+  scale_y_continuous(limits = c(0,0.152), expand = c(0,0), labels =  scales::percent_format(accuracy = 1)) +
+  
+  theme(
+    
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.line.x.bottom = element_line(color = "black"),
+    legend.position = "none"
+    
+    )
+  
+ggplotly(party_plot)
+
+htmlwidgets::saveWidget(ggplotly(party_plot), 
+                        file = "html/party_plot.html",
+                        selfcontained = TRUE)
+
+```
+
+## Elbow plots
+
+For the K-means clustering algorithm, we will have to decide upon a value of k. In other words, how many clusters we would like to generate. For this, we will be using an elbow plot to decide on the value of K. This plot will visualise the within sum of squares to identify the optimal value of K
+
+
+```{r elbow, fig.align='center', message=FALSE, warning=FALSE}
+
+
+#Fit models
+
+tot_withinss <- map_dbl(1:10,  function(k){
+    model <- kmeans(x = data, centers = k, iter.max = 100, nstart = 1000)
+    model$tot.withinss
+})
+
+
+#Create data frame of model results
+
+elbow_df <- data.frame(
+    k = 1:10,
+    tot_withinss = tot_withinss
+)
+
+#Create eblow plot
+
+elbow_plot <- ggplot(elbow_df, aes(x = k, y = tot_withinss)) +
+  geom_line() +
+  geom_point(aes(color = as.character(k)), size = 4) +
+  geom_vline(xintercept = 3, linetype = "dashed", color = "black") +
+  annotate("label", x = 3, y = 7.5e+11, label = "Optimal number of clusters, K = 3", size = 4) +
+  scale_x_continuous(n.breaks = 10) +
+  labs(title = "Elbow Plot", subtitle = "Sum of squares for each value of K", y = "Within sum of squares", x = "Value of K") +
+  theme_classic() +
+  theme(
+    axis.line.x.bottom = element_line(color = "black")
+    , axis.line.y.left = element_line(color = "black")
+    , legend.position = "none"
+    , panel.grid.minor.x = element_blank()
+    )
+
+elbow_plot
+
+ggsave("Images/elbow_plot.png", elbow_plot, height = 4.47, width = 7.2)
+
+
+```
+
+
+## Cluster modelling
+
+Next we'll fit the k-means model to the data. This will take some time to fit, given the size of the data. However, it indicates that 3 clusters is the optimal number of clusters given the data we have.
+
+
+```{r cluster-model, message=FALSE, warning=FALSE}
+
+#fit cluster model
+
+kmean <- kmeans(data, centers = 3, iter.max = 1000, nstart = 10000)
+head(kmean$centers)
+```
+
+
+## PCA 
+
+To visualise the clusters we have identified, we'll compute a PCA for our data so that we can visualise our clusters. We'll then extract the coordinate data generated by the PCA and use that to visualise our clusters.
+
+
+```{r pca, message=FALSE, warning=FALSE}
+
+#Create PCA
+
+pca <- prcomp(data)
+
+#Retrieve coordinates of individuals
+
+ind.coord <- as_tibble(get_pca_ind(pca)$coord) %>%
+  
+  mutate(cluster = factor(kmean$cluster))
+
+head(ind.coord)
+
+#Generate the percentages of the variance explained by the dimensions
+
+eigenvalue <- as_tibble(round(get_eigenvalue(pca), 1))
+variance.percent <- eigenvalue$variance.percent
+
+#Show first 6 rows
+
+head(eigenvalue)
+
+```
+
+
+## PCA visualisation
+
+With the PCA coordinate data we can also generate the 2D cluster visualisation plot to visualise our clusters. 
+
+
+```{r viz-pca, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+#Create PCA viz
+
+pca_viz <- ggpubr::ggscatter(
+              ind.coord, x = "Dim.1", y = "Dim.2", 
+              color = "cluster", palette = "npg", ellipse = TRUE, ellipse.type = "convex",
+              size = 1.5, ggtheme = theme_minimal(),
+              xlab = paste0("Comp 1 (", variance.percent[1], "% )" ),
+              ylab = paste0("Comp 2 (", variance.percent[2], "% )" )
+              ) +
+  
+              ggpubr::stat_mean(aes(color = cluster), size = 4) +
+  
+              labs(
+                  
+                  title = "Voter Clusters by Component"
+                  , subtitle = "Voter clusters by 2 largest PCA components"
+                  , color = "Cluster"
+                  , fill = "Cluster"
+                     
+                     ) +
+  
+              scale_color_manual(values = c(
+          
+                      "1" = "#FF8000"
+                      , "2" = "#00CC00"
+                      , "3" = "#6600CC"
+                
+                )
+              ) +
+              theme_classic() +  
+              
+              theme(
+                
+                  legend.title = element_text(size = 12, face = "bold")
+                  , legend.position = "right"
+                  , legend.background = element_rect(color = "black", size = .5)
+                  
+                  )
+
+
+ggsave("images/pca_plot.png", height = 4.47, width = 7.2)
+
+pca_viz
+
+```
+
+## PCA 3D Visualisation
+
+Given the overlap, we can increase the dimensions used to visualise the clusters to better identify the differences between clusters. Once this 3D plot is generated, we'll then save it as a html widget.
+
+
+
+```{r viz-pca3d, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+#Join colour data
+
+colors <- tibble(cluster = 1:3, colors = c("#FF8000", "#00CC00", "#6600CC"))
+
+
+ind.coord <- ind.coord %>%
+  
+  mutate(cluster = as.numeric(cluster)) %>%
+  
+  left_join(colors)
+
+
+#Create 3D plot
+
+td_pca <- plot3d(
+     x=ind.coord$Dim.1, y=ind.coord$Dim.2, z=ind.coord$Dim.3, 
+     col = ind.coord$colors, 
+     type = 'p', 
+     radius = .3,
+     xlab=paste0("Comp 1 (", variance.percent[1], "% )" ), 
+     ylab=paste0("Comp 2 (", variance.percent[2], "% )" ), 
+     zlab=paste0("Comp 3 (", variance.percent[3], "% )" )
+     )
+
+
+
+rglwidget()
+
+#Svae as html widget
+
+htmlwidgets::saveWidget(
+  
+  widget = rglwidget(width = 520, height = 520),
+  file = "html/3d_cluster.html",
+  selfcontained = TRUE
+  
+)
+
+```
+
+
+
+## Cluster Exploration
+
+The following code chunks will analyse the clusters we've fitted to explore the data. First though, we'll extract the data for the density plot of the lr_scale, by cluster.
+
+```{r cluster-props, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+#Add cluster identifiers to voter data
+
+data <- data %>%
+  
+  mutate(cluster = kmean$cluster)
+
+
+#Create density plot
+
+lr_plot <- ggplot(data, aes(x = lr_scale, fill = as.character(cluster))) +
+  
+  geom_density(alpha = .4) +
+  
+  labs(
+    
+    x = "Left/Right Scale (0 = Left, 10 = Right)"
+    , y = "Proportion"
+    , title = "Cluster Political Alignment"
+    , subtitle = "Left-right alignment of voters by cluster"
+    , fill = "Cluster"
+    
+  ) +
+  
+  scale_fill_manual(values = c(
+    
+      "1" = "#FF8000"
+      , "2" = "#00CC00"
+      , "3" = "#6600CC"
+    
+    )
+  ) +
+  
+  scale_x_continuous(expand = c(0,0)) +
+  
+  scale_y_continuous(
+    
+    expand = c(0,0)
+    , labels = scales::percent_format(accuracy = 1)
+    
+  ) +
+  
+   theme_classic() +
+  
+  theme(
+    
+    axis.line.x.bottom = element_line()
+    , panel.grid.major.y = element_line()
+    , panel.grid.minor.y = element_blank()
+    , panel.grid.minor.x = element_blank()
+    , legend.title = element_text(size = 12, face = "bold")
+    , legend.position = "right"
+    , legend.background = element_rect(color = "black", size = .5)
+    , axis.text.y = element_text(size = 8)
+                  
+  )
+
+
+ggsave("images/lr_plot.png", height = 4.47, width = 7.2)
+
+lr_plot
+
+
+```
+
+
+### Cluster 1: 'The Liberal Cosmopolitans'
+
+First we'll get the proportions from the data for this cluster. Given that it appears to be the most left-leaning, we'll take the proportions for labour vote, earnings educational qualifications, guardian reading, and remain voting.
+
+```{r cluster_1, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+#Extract varaibles of interest
+
+cluster_1 <- kmean$centers %>%
+  
+  as_tibble() %>%
+  
+   mutate(
+    
+    cluster = as.character(1:3)
+    , uni_educated = p_education_university_or_cnaa_first_degree_e_g_ba_b_sc_b_ed + p_education_university_or_cnaa_higher_degree_e_g_m_sc_ph_d
+    
+    ) %>%
+  
+  select(
+    
+        cluster
+        , general_election_vote_labour
+        , eu_ref_vote_stay_remain_in_the_eu
+        , risk_poverty_very_unlikely
+        , risk_unemployment_very_unlikely
+        , uni_educated
+        , p_paper_read_the_guardian
+    
+  ) %>%
+  
+  reshape2::melt(id = "cluster")
+  
+
+
+#Create cluster plot
+
+cluster_1_plot <- ggplot(cluster_1, aes(y = variable, x = value, group = cluster, fill = cluster)) +
+  
+  geom_bar(stat = "identity", position = "dodge") +
+  
+  labs(
+    
+    x = "Proportion"
+    , y = NULL
+    , title = "Cluster 1 Categories of Interest"
+    , subtitle = "Proportion of voters falling into each category, by cluster"
+    , fill = "Cluster"
+    
+  ) +
+  
+  scale_x_continuous(
+    
+    labels = scales::percent_format(accuracy = 1)
+    , limits = c(0, 0.54)
+    , expand = c(0,0)
+    
+    ) +
+  
+  scale_y_discrete(labels = c(
+    
+    "Will vote Labour"
+    , "Voted Remain"
+    , "Low risk of poverty"
+    , "Low risk unemployment"
+    , "University educated"
+    , "Guardian readers"
+    
+    )
+  ) +
+  
+  scale_fill_manual(values = c(
+    
+      "1" = "#FF8000"
+      , "2" = "#00CC00"
+      , "3" = "#6600CC"
+    
+    )
+  ) +
+  
+  theme_classic() +
+  
+  theme(
+    
+    axis.line.x.bottom = element_blank()
+    , panel.grid.major.x = element_line()
+    , panel.grid.minor.x = element_blank()
+    , panel.grid.minor.y = element_blank()
+    , legend.title = element_text(size = 12, face = "bold")
+    , legend.position = "right"
+    , legend.background = element_rect(color = "black", size = .5)
+    , axis.text.y = element_text(size = 8)
+                  
+    
+  )
+
+
+ggsave("images/c1_plot.png", height = 4.47, width = 7.2)
+
+cluster_1_plot
+
+```
+
+
+### Cluster 2: 'The Tory Loyalists'
+
+For the analysis of this cluster we'll first extract the household and personal income groupings to investiagte our hunch that this cluster is the most economically secure
+
+```{r cluster_2_income, message=FALSE, warning=FALSE}
+
+
+#Extract income data by cluster
+
+cluster_income <- data %>%
+  
+  select(
+    
+    cluster
+    , p_gross_personal
+    , p_gross_household
+    
+    ) %>%
+  
+  filter(
+    
+    #p_gross_personal < 15
+    , p_gross_household < 16
+    
+  ) %>%
+  
+  group_by(cluster) %>%
+  
+  summarise(
+    
+    #prop_p = sum(p_gross_personal > 10)/n()
+    ,  prop_h = sum(p_gross_household > 10)/n() * 100
+    
+    ) %>%
+  
+  rename(
+    
+    Cluster = cluster
+    , `Proportion of cluster (%)` = prop_h
+    
+  )
+
+
+#Present data in table
+
+knitr::kable(
+  
+  cluster_income
+  , caption = "Proportion of respondents with a reported gross household income >£50,000, by cluster"
+  , "html"
+)
+
+```
+
+
+With this extracted, we can then analyse the other features that make cluster 2 stand out. For this we'll be extracting their prior voting history and religiosity.
+
+
+```{r cluster_2_analysis, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+#Extract variables of interest
+
+cluster_2 <- kmean$centers %>%
+  
+  as_tibble() %>%
+  
+   mutate(
+    
+    cluster = as.character(1:3)
+    
+   ) %>%
+  
+  group_by(cluster) %>%
+    
+  mutate(
+    
+    christian = sum(
+      
+         p_religion_yes_church_of_england_anglican_episcopal
+         , p_religion_yes_roman_catholic 
+         , p_religion_yes_presbyterian_church_of_scotland
+         , p_religion_yes_methodist 
+         , p_religion_yes_baptist 
+         , p_religion_yes_united_reformed_church 
+         , p_religion_yes_free_presbyterian 
+         , p_religion_yes_brethren
+         , p_religion_yes_a_orthodox_christian
+         , p_religion_yes_pentecostal_e_g_assemblies_of_god_elim_pentecostal_church_new_testament_church_of_god_redeemed_christian_church_of_god
+         , p_religion_yes_evangelical_a_independent_non_denominational_e_g_fiec_pioneer_vineyard_newfrontiers
+          
+      )
+    
+    ) %>%
+  
+  select(
+    
+        cluster
+        , general_election_vote_conservative
+        , p_past_vote_2019_conservative
+        , p_past_vote_2017_conservative
+        , p_past_vote_2015_conservative
+        , eu_ref_vote_leave_the_eu
+        , christian
+        
+  ) %>%
+  
+  pivot_longer(
+  
+    cols = c(general_election_vote_conservative
+        , p_past_vote_2019_conservative
+        , p_past_vote_2017_conservative
+        , p_past_vote_2015_conservative
+        , eu_ref_vote_leave_the_eu
+        , christian)
+    
+    , names_to = "names"
+    
+    , values_to = "values"
+      
+  )
+
+
+#Create cluster bar plot
+
+
+cluster_2_plot <- ggplot(cluster_2, aes(y = names, x = values, group = cluster, fill = cluster)) +
+  
+  geom_bar(stat = "identity", position = "dodge") +
+  
+  labs(
+    
+    x = "Proportion"
+    , y = NULL
+    , title = "Cluster 2 Categories of Interest"
+    , subtitle = "Proportion of voters falling into each category by cluster"
+    , fill = "Cluster"
+    
+  ) +
+  
+  scale_x_continuous(
+    
+    labels = scales::percent_format(accuracy = 1)
+    , limits = c(0, 0.54)
+    , expand = c(0,0)
+    
+    ) +
+  
+  scale_y_discrete(labels = c(
+    
+    "Christian"
+    , "Voted Leave"
+    , "Voted Conservative in 2015"
+    , "Voted Conservative in 2017"
+    , "Voted Conservative in 2019"
+    , "Will vote Conservative"
+    
+    )
+  ) +
+  
+  scale_fill_manual(values = c(
+    
+      "1" = "#FF8000"
+      , "2" = "#00CC00"
+      , "3" = "#6600CC"
+    
+    )
+  ) +
+  
+  theme_classic() +
+  
+  theme(
+    
+    axis.line.x.bottom = element_blank()
+    , panel.grid.major.x = element_line()
+    , panel.grid.minor.x = element_blank()
+    , panel.grid.minor.y = element_blank()
+    , legend.title = element_text(size = 12, face = "bold")
+    , legend.position = "right"
+    , legend.background = element_rect(color = "black", size = .5)
+    , axis.text.y = element_text(size = 8)
+                  
+    
+  )
+
+
+ggsave("images/c2_plot.png", height = 4.47, width = 7.2)
+
+cluster_2_plot
+  
+```
+
+### Cluster 3: 'The Politically Uninterested'
+
+This is the more politically apathetic cluster of the three. For the analysis of this cluster, we will extract proportions for non-White British ethnicity, divorce, and 'don't knows' in deciding who to vote for.
+
+
+
+```{r cluster-3, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+#Extract variables of interest
+
+cluster_3 <- kmean$centers %>%
+  
+  as_tibble() %>%
+  
+   mutate(
+    
+    cluster = as.character(1:3)
+    
+   ) %>%
+  
+  group_by(cluster) %>%
+    
+  mutate(
+    
+    non_white_british = 1 - sum(p_ethnicity_white_british, p_ethnicity_any_other_white_background)
+    
+    ) %>%
+  
+  select(
+    
+    cluster
+    , non_white_british
+    , p_marital_divorced
+    , p_education_no_formal_qualifications
+    , p_paper_read_the_sun
+    , p_paper_read_none
+    , general_election_vote_dont_know
+    , eu_ref_vote_dont_know
+        
+  ) %>%
+  
+  pivot_longer(
+  
+    cols = c(p_marital_divorced
+    , p_education_no_formal_qualifications
+    , p_paper_read_the_sun
+    , p_paper_read_none
+    , non_white_british
+    , general_election_vote_dont_know
+    , eu_ref_vote_dont_know)
+    
+    , names_to = "names"
+    
+    , values_to = "values"
+      
+  )
+
+
+#Create plot for cluster 3
+
+
+
+cluster_3_plot <- ggplot(cluster_3, aes(y = names, x = values, group = cluster, fill = cluster)) +
+  
+  geom_bar(stat = "identity", position = "dodge") +
+  
+  labs(
+    
+    x = "Proportion"
+    , y = NULL
+    , title = "Cluster 3 Categories of Interest"
+    , subtitle = "Proportion of voters falling into each category by cluster"
+    , fill = "Cluster"
+    
+  ) +
+  
+  scale_x_continuous(
+    
+    labels = scales::percent_format(accuracy = 1)
+    #, limits = c(0, 0.54)
+    , expand = c(0,0)
+    
+    ) +
+  
+  scale_y_discrete(labels = c(
+    
+    "Don't know how they voted in the EU referendum"
+    , "Don't know who they'd vote for in an election"
+    , "Not White British"
+    , "No formal qualifications"
+    , "Divorced"
+    , "Don't read any newspapers"
+    , "Sun readers"
+    
+    )
+  ) +
+  
+  scale_fill_manual(values = c(
+    
+      "1" = "#FF8000"
+      , "2" = "#00CC00"
+      , "3" = "#6600CC"
+    
+    )
+  ) +
+  
+  theme_classic() +
+  
+  theme(
+    
+    axis.line.x.bottom = element_blank()
+    , panel.grid.major.x = element_line()
+    , panel.grid.minor.x = element_blank()
+    , panel.grid.minor.y = element_blank()
+    , legend.title = element_text(size = 12, face = "bold")
+    , legend.position = "right"
+    , legend.background = element_rect(color = "black", size = .5)
+    , axis.text.y = element_text(size = 8)
+                  
+    
+  )
+
+
+ggsave("images/c3_plot.png", height = 4.47, width = 7.2)
+
+cluster_3_plot
+
+
+```
