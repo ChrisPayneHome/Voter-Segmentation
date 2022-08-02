@@ -1,7 +1,8 @@
 # Voter-Segmentation
 
 
-![lr_plot](https://user-images.githubusercontent.com/67926222/182265039-29974418-31de-4a99-9799-5850059e6059.png)
+![pca_plot](https://user-images.githubusercontent.com/67926222/182265112-6d568359-6c21-4633-bd5b-3cbd60b8fb8b.png)
+
 
 
 ## Table of Contents
