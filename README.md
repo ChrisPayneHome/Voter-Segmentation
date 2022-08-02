@@ -1,4 +1,4 @@
-# Voter-Segmentation
+# VoterSegmentation Analysis
 
 
 ![pca_plot](https://user-images.githubusercontent.com/67926222/182265112-6d568359-6c21-4633-bd5b-3cbd60b8fb8b.png)
