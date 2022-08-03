@@ -13,7 +13,7 @@
 
 ## Introduction
 
-A project using unsupervised machine learning to segment voters 
+A project using unsupervised machine learning to segment voters. This project was also featured on my blog <a href="https://chrispaynehome.github.io/html/voters.html">here</a>.
 
 ## Data
 
@@ -21,6 +21,10 @@ The data used for this project is the latest edition of the <a href="https://www
 
 This project only used a small number of the variables as I felt it was the only fields that were necessary. Feel free to explore the data!
 
-## Rmarkdown & HTML
+## Markdown
 
+The Voter-Segmentation .html and .Rmd files contain all the code written for this project. The .Rmd file is the raw Rmarkdown document, while the .html file is the rendered version of the Rmd file. 
 
+## HTML
+
+This folder contains the html code for the two html widgets that are used in the article, as well as some accompanying JS code.
