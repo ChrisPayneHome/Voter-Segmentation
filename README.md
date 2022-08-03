@@ -8,7 +8,7 @@
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Data](#data)
-3. [Rmarkdown & HTML](#markdown)
+3. [Markdown](#markdown)
 4. [HTML](#html)
 
 ## Introduction
