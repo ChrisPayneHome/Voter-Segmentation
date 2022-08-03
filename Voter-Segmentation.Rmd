@@ -877,10 +877,17 @@ cluster_income <- data %>%
     
     ) %>%
   
+  mutate(
+    
+    cluster = as.factor(cluster)
+    , prop_h = as.numeric(prop_h)
+    
+    ) %>%
+  
   rename(
     
     Cluster = cluster
-    , `Proportion of cluster (%)` = prop_h
+    , `% of cluster in households earning more than £50,000` = prop_h
     
   )
 
@@ -890,8 +897,8 @@ cluster_income <- data %>%
 knitr::kable(
   
   cluster_income
-  , caption = "Proportion of respondents with a reported gross household income >£50,000, by cluster"
-  , "html"
+  , align = "rc"
+
 )
 
 ```
